@@ -20,6 +20,7 @@ import (
 var tracker *cache.Cache
 
 var apiURL = "http://localhost:8080/lookup?uid=%s"
+var registerURL = "http://localhost:8080/register"
 
 type PeerIpAndPort struct {
 	Ip   string `json:"ip"`
@@ -104,16 +105,32 @@ func startUdpHolePunching(peer PeerIpAndPort) {
 
 func sendFile() {
 	fmt.Println("Sending file...")
+	ipAndPort := PeerIpAndPort{"127.0.0.1", localUdpPort}
+	jsonData, err := json.Marshal(ipAndPort)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	buffer := bytes.NewBuffer(jsonData)
+	resp, err := http.Post(registerURL, "application/json", buffer)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer resp.Body.Close()
+	uniqueID, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println("Unique ID:", string(uniqueID))
 }
 
 func receiveFile() {
-	fmt.Print("Input Unique Code: ") // Use Print for same-line input
+	fmt.Print("Input Unique Code: ")
 
-	// 1. Correctly read user input
 	scanner := bufio.NewScanner(os.Stdin)
-	// THIS IS THE CRUCIAL LINE THAT WAS MISSING
 	if !scanner.Scan() {
-		// This handles the case where the input stream ends (e.g., Ctrl+D)
 		fmt.Println("No input received.")
 		return
 	}
@@ -124,11 +141,10 @@ func receiveFile() {
 	}
 	ipAndPort := PeerIpAndPort{
 		Ip:   "127.0.0.1",
-		Port: 5000,
+		Port: 8080,
 	}
 	jsonData, err := json.Marshal(ipAndPort)
 	if err != nil {
-		// Handle the error, maybe log it and return from the function
 		fmt.Println("Error marshaling JSON:", err)
 		return
 	}
@@ -139,24 +155,20 @@ func receiveFile() {
 		fmt.Println("Error making the request:", err)
 		return
 	}
-	// 2. IMPORTANT: Defer closing the response body.
-	// This ensures the network connection is released, preventing resource leaks.
+
 	defer resp.Body.Close()
 
-	// 3. Check the HTTP status code
 	if resp.StatusCode != http.StatusOK {
 		fmt.Printf("API call failed with status code: %d\n", resp.StatusCode)
 		return
 	}
 
-	// 4. Read the response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		fmt.Println("Error reading the response body:", err)
 		return
 	}
 
-	// 5. Print the result (as a string)
 	fmt.Println("Response Body:", string(body))
 
 }
@@ -182,8 +194,6 @@ func lookupFunc(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Found:", val)
 	peerFromCache, ok := val.(PeerIpAndPort)
 	if !ok {
-		// This is critical. It handles cases where the wrong type was stored
-		// in the cache, preventing a panic.
 		fmt.Println("Error: The value in the cache is not of type PeerIpAndPort")
 		return
 	}
@@ -197,8 +207,21 @@ func lookupFunc(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func callback(val PeerIpAndPort, ipAndPort PeerIpAndPort) {
-
+func callback(senderIpAndPort PeerIpAndPort, receiverIpAndPort PeerIpAndPort) {
+	jsonData, err := json.Marshal(receiverIpAndPort)
+	if err != nil {
+		fmt.Println("Error marshaling JSON:", err)
+		return
+	}
+	buffer := bytes.NewBuffer(jsonData)
+	resp, err := http.Post("http://"+senderIpAndPort.Ip+":"+strconv.Itoa(receiverIpAndPort.Port)+"/webhook", "application/json", buffer)
+	if err != nil {
+		fmt.Println("Error making the request:", err)
+		return
+	}
+	if resp.StatusCode == http.StatusOK {
+		fmt.Println("Received response:", string(buffer.Bytes()))
+	}
 }
 
 func registerFunc(w http.ResponseWriter, r *http.Request) {
