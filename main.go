@@ -29,7 +29,8 @@ type PeerIpAndPort struct {
 
 var udpConn *net.UDPConn
 
-const localUdpPort = 9090
+const senderUdpPort = 9090
+const receiverUdpPort = 9091
 
 func webhookFunc(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -43,7 +44,7 @@ func webhookFunc(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
-	go startUdpHolePunching(peerIpAndPort)
+	go startUdpHolePunching(peerIpAndPort, senderUdpPort)
 	w.WriteHeader(http.StatusOK)
 	_, err = w.Write([]byte("Received ip and port of Peer"))
 	if err != nil {
@@ -51,14 +52,14 @@ func webhookFunc(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func startUdpHolePunching(peer PeerIpAndPort) {
+func startUdpHolePunching(peer PeerIpAndPort, port int) {
 	peerAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", peer.Ip, peer.Port))
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	fmt.Printf("PUNCHING: Resolved peer address to %s\n", peerAddr.String())
-	localAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("0.0.0.0:%d", localUdpPort))
+	localAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
 		fmt.Println("Error resolving local UDP address:", err)
 		return
@@ -105,7 +106,7 @@ func startUdpHolePunching(peer PeerIpAndPort) {
 
 func sendFile() {
 	fmt.Println("Sending file...")
-	ipAndPort := PeerIpAndPort{"127.0.0.1", localUdpPort}
+	ipAndPort := PeerIpAndPort{"127.0.0.1", senderUdpPort}
 	jsonData, err := json.Marshal(ipAndPort)
 	if err != nil {
 		fmt.Println(err)
@@ -141,7 +142,7 @@ func receiveFile() {
 	}
 	ipAndPort := PeerIpAndPort{
 		Ip:   "127.0.0.1",
-		Port: 8080,
+		Port: 9090,
 	}
 	jsonData, err := json.Marshal(ipAndPort)
 	if err != nil {
@@ -159,6 +160,7 @@ func receiveFile() {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		startUdpHolePunching(ipAndPort, receiverUdpPort)
 		fmt.Printf("API call failed with status code: %d\n", resp.StatusCode)
 		return
 	}
@@ -214,7 +216,7 @@ func callback(senderIpAndPort PeerIpAndPort, receiverIpAndPort PeerIpAndPort) {
 		return
 	}
 	buffer := bytes.NewBuffer(jsonData)
-	resp, err := http.Post("http://"+senderIpAndPort.Ip+":"+strconv.Itoa(receiverIpAndPort.Port)+"/webhook", "application/json", buffer)
+	resp, err := http.Post("http://"+senderIpAndPort.Ip+":"+strconv.Itoa(8080)+"/webhook", "application/json", buffer)
 	if err != nil {
 		fmt.Println("Error making the request:", err)
 		return
