@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,12 +16,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/patrickmn/go-cache"
+	"github.com/pion/stun"
 )
 
 var tracker *cache.Cache
 
-var apiURL = "http://localhost:8080/lookup?uid=%s"
-var registerURL = "http://localhost:8080/register"
+var apiURL = "https://n5guij-ip-117-253-83-9.tunnelmole.net/lookup?uid=%s"
+var registerURL = "https://n5guij-ip-117-253-83-9.tunnelmole.net/register"
 
 type PeerIpAndPort struct {
 	Ip   string `json:"ip"`
@@ -104,9 +106,50 @@ func startUdpHolePunching(peer PeerIpAndPort, port int) {
 	fmt.Println("Communication finished.")
 }
 
+func findPublicIp() (string, error) {
+	// Create a new STUN client
+	c, err := stun.Dial("udp4", "stun.l.google.com:19302")
+	if err != nil {
+		fmt.Println("Error dialing STUN server:", err)
+		return "", err // Return an empty string and the error
+	}
+	defer c.Close()
+
+	// Build a binding request
+	message := stun.MustBuild(stun.TransactionID, stun.BindingRequest)
+
+	var publicIP string
+	// Send the request and handle the response
+	if err := c.Do(message, func(res stun.Event) {
+		if res.Error != nil {
+			fmt.Println("STUN request error:", res.Error)
+			return
+		}
+
+		var xorAddr stun.XORMappedAddress
+		if err := xorAddr.GetFrom(res.Message); err != nil {
+			fmt.Println("Error getting XOR-MAPPED-ADDRESS:", err)
+			return
+		}
+		publicIP = xorAddr.IP.String()
+	}); err != nil {
+		fmt.Println("Error performing STUN request:", err)
+		return "", err // Return an empty string and the error
+	}
+
+	if publicIP == "" {
+		// Create a new error to explain the failure
+		return "", errors.New("failed to get public IP address from STUN server")
+	}
+
+	fmt.Println("My public IP is:", publicIP)
+	return publicIP, nil // Return the IP and nil for the error to indicate success
+}
+
 func sendFile() {
 	fmt.Println("Sending file...")
-	ipAndPort := PeerIpAndPort{"127.0.0.1", senderUdpPort}
+	publicIP, err := findPublicIp()
+	ipAndPort := PeerIpAndPort{publicIP, senderUdpPort}
 	jsonData, err := json.Marshal(ipAndPort)
 	if err != nil {
 		fmt.Println(err)
@@ -140,8 +183,9 @@ func receiveFile() {
 		fmt.Println("Unique code cannot be empty.")
 		return
 	}
+	publicIP, err := findPublicIp()
 	ipAndPort := PeerIpAndPort{
-		Ip:   "127.0.0.1",
+		Ip:   publicIP,
 		Port: 9090,
 	}
 	jsonData, err := json.Marshal(ipAndPort)
