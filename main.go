@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,9 +22,9 @@ import (
 
 var tracker *cache.Cache
 
-var apiURL = "https://tkgw5j-ip-223-233-64-250.tunnelmole.net/lookup?uid=%s"
-var registerURL = "https://tkgw5j-ip-223-233-64-250.tunnelmole.net/register"
-var baseUrl = "https://tkgw5j-ip-223-233-64-250.tunnelmole.net"
+var apiURL = "https://mv40si-ip-223-233-64-250.tunnelmole.net/lookup?uid=%s"
+var registerURL = "https://mv40si-ip-223-233-64-250.tunnelmole.net/register"
+var baseUrl = "https://mv40si-ip-223-233-64-250.tunnelmole.net"
 
 type PeerIpAndPort struct {
 	Ip   string `json:"ip"`
@@ -56,55 +57,115 @@ func webhookFunc(w http.ResponseWriter, r *http.Request) {
 }
 
 func startUdpHolePunching(peer PeerIpAndPort, port int) {
+	// --- Part 1: Hole Punching (largely the same) ---
 	peerAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", peer.Ip, peer.Port))
 	if err != nil {
-		fmt.Println(err)
+		fmt.Printf("Error resolving peer UDP address: %v\n", err)
 		return
 	}
 	fmt.Printf("PUNCHING: Resolved peer address to %s\n", peerAddr.String())
-	localAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("0.0.0.0:%d", port))
+
+	localAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("0.0.0.0:%d", port)) // Use udp4 to be explicit
 	if err != nil {
-		fmt.Println("Error resolving local UDP address:", err)
+		fmt.Printf("Error resolving local UDP address: %v\n", err)
 		return
 	}
 
-	conn, err := net.ListenUDP("udp", localAddr)
+	conn, err := net.ListenUDP("udp4", localAddr)
 	if err != nil {
-		fmt.Println("Error listening on UDP port:", err)
+		fmt.Printf("Error listening on UDP port: %v\n", err)
 		return
 	}
-	defer conn.Close()
+	defer conn.Close() // This will be called when the function exits, cleaning up resources.
+
 	fmt.Printf("PUNCHING: Listening on local address %s\n", conn.LocalAddr().String())
 
-	fmt.Printf("PUNCHING: Sending punch packet to %s\n", peerAddr.String())
-	if _, err := conn.WriteToUDP([]byte("ping"), peerAddr); err != nil {
-		fmt.Println("Error sending punch packet:", err)
+	// Send the initial punch packet
+	if _, err := conn.WriteToUDP([]byte("punch"), peerAddr); err != nil {
+		fmt.Printf("Error sending punch packet: %v\n", err)
 		return
 	}
+	fmt.Printf("PUNCHING: Sent punch packet to %s\n", peerAddr.String())
 
+	// Wait for the peer's response to complete the punch
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-
 	buffer := make([]byte, 1024)
-	n, remoteAddr, err := conn.ReadFromUDP(buffer)
+	_, remoteAddr, err := conn.ReadFromUDP(buffer)
 	if err != nil {
-		fmt.Println("Error receiving packet (or timeout):", err)
+		fmt.Printf("Error receiving packet (or timeout): %v\n", err)
+		fmt.Println("Hole punching failed.")
 		return
 	}
+	conn.SetReadDeadline(time.Time{}) // Clear the read deadline for continuous listening
 
-	fmt.Printf("SUCCESS: Hole punched! Received '%s' from %s\n", string(buffer[:n]), remoteAddr.String())
-	conn.SetReadDeadline(time.Time{})
+	fmt.Printf("\nSUCCESS: Hole punched! Connection established with %s\n", remoteAddr.String())
+	fmt.Println("----------------------------------------------------")
+	fmt.Println("You can now chat. Type your message and press Enter.")
+	fmt.Println("Type '/quit' to exit.")
+	fmt.Println("----------------------------------------------------")
 
-	for i := 0; i < 5; i++ {
-		msg := fmt.Sprintf("hello from server %d", i)
-		if _, err := conn.WriteToUDP([]byte(msg), remoteAddr); err != nil {
-			fmt.Println("Error sending message:", err)
+	// --- Part 2: Bidirectional Chat ---
+
+	// A WaitGroup allows us to wait for our listening goroutine to finish before exiting.
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	// Launch the listening goroutine
+	go func() {
+		defer wg.Done() // Signal that this goroutine is finished when it exits
+		listenForMessages(conn)
+	}()
+
+	// Use the main goroutine to handle sending messages
+	handleSending(conn, remoteAddr)
+
+	// When handleSending exits (e.g., user types /quit), we need to close the connection.
+	// This will cause the listenForMessages goroutine to exit because conn.ReadFromUDP will error.
+	fmt.Println("Closing connection...")
+	conn.Close()
+
+	// Wait for the listening goroutine to finish its cleanup.
+	wg.Wait()
+	fmt.Println("Communication finished.")
+}
+
+// listenForMessages runs in its own goroutine, continuously reading from the connection.
+func listenForMessages(conn *net.UDPConn) {
+	buffer := make([]byte, 1024)
+	for {
+		n, _, err := conn.ReadFromUDP(buffer)
+		if err != nil {
+			// If we get an error, it's likely because the connection was closed.
+			// We can safely exit the loop.
+			fmt.Printf("\nListener stopping due to an error: %v\n", err)
+			return
+		}
+		// Print the received message. The \r is a carriage return to overwrite the current line.
+		fmt.Printf("\r<-- Received: %s\n> ", string(buffer[:n]))
+	}
+}
+
+// handleSending reads from stdin and sends messages to the peer.
+func handleSending(conn *net.UDPConn, remoteAddr *net.UDPAddr) {
+	scanner := bufio.NewScanner(os.Stdin)
+	fmt.Print("> ")
+	for scanner.Scan() {
+		text := scanner.Text()
+		if strings.ToLower(text) == "/quit" {
+			break // Exit the loop
+		}
+
+		// Send the message to the peer
+		_, err := conn.WriteToUDP([]byte(text), remoteAddr)
+		if err != nil {
+			fmt.Printf("Error sending message: %v\n", err)
 			break
 		}
-		fmt.Printf("--> Sent: '%s'\n", msg)
-		time.Sleep(1 * time.Second)
+		fmt.Print("> ")
 	}
-
-	fmt.Println("Communication finished.")
+	if err := scanner.Err(); err != nil {
+		fmt.Printf("Error reading from stdin: %v\n", err)
+	}
 }
 
 func findPublicIp() (PeerIpAndPort, error) {
