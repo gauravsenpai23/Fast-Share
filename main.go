@@ -21,8 +21,9 @@ import (
 
 var tracker *cache.Cache
 
-var apiURL = "https://n5guij-ip-117-253-83-9.tunnelmole.net/lookup?uid=%s"
-var registerURL = "https://n5guij-ip-117-253-83-9.tunnelmole.net/register"
+var apiURL = "https://tkgw5j-ip-223-233-64-250.tunnelmole.net/lookup?uid=%s"
+var registerURL = "https://tkgw5j-ip-223-233-64-250.tunnelmole.net/register"
+var baseUrl = "https://tkgw5j-ip-223-233-64-250.tunnelmole.net"
 
 type PeerIpAndPort struct {
 	Ip   string `json:"ip"`
@@ -106,20 +107,19 @@ func startUdpHolePunching(peer PeerIpAndPort, port int) {
 	fmt.Println("Communication finished.")
 }
 
-func findPublicIp() (string, error) {
-	// Create a new STUN client
+func findPublicIp() (PeerIpAndPort, error) {
+
 	c, err := stun.Dial("udp4", "stun.l.google.com:19302")
 	if err != nil {
 		fmt.Println("Error dialing STUN server:", err)
-		return "", err // Return an empty string and the error
+		return PeerIpAndPort{}, err
 	}
 	defer c.Close()
 
-	// Build a binding request
 	message := stun.MustBuild(stun.TransactionID, stun.BindingRequest)
 
 	var publicIP string
-	// Send the request and handle the response
+	var port int
 	if err := c.Do(message, func(res stun.Event) {
 		if res.Error != nil {
 			fmt.Println("STUN request error:", res.Error)
@@ -132,25 +132,26 @@ func findPublicIp() (string, error) {
 			return
 		}
 		publicIP = xorAddr.IP.String()
+		port = xorAddr.Port
 	}); err != nil {
 		fmt.Println("Error performing STUN request:", err)
-		return "", err // Return an empty string and the error
+		return PeerIpAndPort{}, err
 	}
 
 	if publicIP == "" {
-		// Create a new error to explain the failure
-		return "", errors.New("failed to get public IP address from STUN server")
+		return PeerIpAndPort{}, errors.New("failed to get public IP address from STUN server")
 	}
 
-	fmt.Println("My public IP is:", publicIP)
-	return publicIP, nil // Return the IP and nil for the error to indicate success
+	publicIpAndPort := PeerIpAndPort{publicIP, port}
+
+	fmt.Println("Inside Find public ip function My public IP is:", publicIpAndPort.Ip, " and Port is :", publicIpAndPort.Port)
+	return publicIpAndPort, nil
 }
 
 func sendFile() {
 	fmt.Println("Sending file...")
-	publicIP, err := findPublicIp()
-	ipAndPort := PeerIpAndPort{publicIP, senderUdpPort}
-	jsonData, err := json.Marshal(ipAndPort)
+	publicIpAndPort, err := findPublicIp()
+	jsonData, err := json.Marshal(publicIpAndPort)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -183,12 +184,8 @@ func receiveFile() {
 		fmt.Println("Unique code cannot be empty.")
 		return
 	}
-	publicIP, err := findPublicIp()
-	ipAndPort := PeerIpAndPort{
-		Ip:   publicIP,
-		Port: 9090,
-	}
-	jsonData, err := json.Marshal(ipAndPort)
+	publicIpAndPort, err := findPublicIp()
+	jsonData, err := json.Marshal(publicIpAndPort)
 	if err != nil {
 		fmt.Println("Error marshaling JSON:", err)
 		return
@@ -204,7 +201,7 @@ func receiveFile() {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		startUdpHolePunching(ipAndPort, receiverUdpPort)
+		startUdpHolePunching(publicIpAndPort, receiverUdpPort)
 		fmt.Printf("API call failed with status code: %d\n", resp.StatusCode)
 		return
 	}
@@ -225,7 +222,6 @@ func lookupFunc(w http.ResponseWriter, r *http.Request) {
 	}
 	uid := r.URL.Query().Get("uid")
 	val, found := tracker.Get(uid)
-	fmt.Println("IP address lookup function is : ", r.RemoteAddr)
 	var ipAndPort PeerIpAndPort
 	err := json.NewDecoder(r.Body).Decode(&ipAndPort)
 	if err != nil {
@@ -254,13 +250,14 @@ func lookupFunc(w http.ResponseWriter, r *http.Request) {
 }
 
 func callback(senderIpAndPort PeerIpAndPort, receiverIpAndPort PeerIpAndPort) {
+
 	jsonData, err := json.Marshal(receiverIpAndPort)
 	if err != nil {
 		fmt.Println("Error marshaling JSON:", err)
 		return
 	}
 	buffer := bytes.NewBuffer(jsonData)
-	resp, err := http.Post("http://"+senderIpAndPort.Ip+":"+strconv.Itoa(8080)+"/webhook", "application/json", buffer)
+	resp, err := http.Post(baseUrl+"/webhook", "application/json", buffer)
 	if err != nil {
 		fmt.Println("Error making the request:", err)
 		return
@@ -274,7 +271,6 @@ func registerFunc(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is supported.", http.StatusMethodNotAllowed)
 	}
-	fmt.Println("IP address register function is : ", r.RemoteAddr)
 	var ipAndPort PeerIpAndPort
 	err := json.NewDecoder(r.Body).Decode(&ipAndPort)
 	if err != nil {
