@@ -200,7 +200,7 @@ func receiveFile() {
 
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode == http.StatusOK {
 		startUdpHolePunching(publicIpAndPort, receiverUdpPort)
 		fmt.Printf("API call failed with status code: %d\n", resp.StatusCode)
 		return
