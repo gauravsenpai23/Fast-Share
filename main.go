@@ -22,9 +22,7 @@ import (
 
 var tracker *cache.Cache
 
-var apiURL = "https://mv40si-ip-223-233-64-250.tunnelmole.net/lookup?uid=%s"
-var registerURL = "https://mv40si-ip-223-233-64-250.tunnelmole.net/register"
-var baseUrl = "https://mv40si-ip-223-233-64-250.tunnelmole.net"
+var baseUrl = "http://localhost:8080"
 
 type PeerIpAndPort struct {
 	Ip   string `json:"ip"`
@@ -57,7 +55,6 @@ func webhookFunc(w http.ResponseWriter, r *http.Request) {
 }
 
 func startUdpHolePunching(peer PeerIpAndPort, port int) {
-	// --- Part 1: Hole Punching (largely the same) ---
 	peerAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", peer.Ip, peer.Port))
 	if err != nil {
 		fmt.Printf("Error resolving peer UDP address: %v\n", err)
@@ -76,18 +73,16 @@ func startUdpHolePunching(peer PeerIpAndPort, port int) {
 		fmt.Printf("Error listening on UDP port: %v\n", err)
 		return
 	}
-	defer conn.Close() // This will be called when the function exits, cleaning up resources.
+	defer conn.Close()
 
 	fmt.Printf("PUNCHING: Listening on local address %s\n", conn.LocalAddr().String())
 
-	// Send the initial punch packet
 	if _, err := conn.WriteToUDP([]byte("punch"), peerAddr); err != nil {
 		fmt.Printf("Error sending punch packet: %v\n", err)
 		return
 	}
 	fmt.Printf("PUNCHING: Sent punch packet to %s\n", peerAddr.String())
 
-	// Wait for the peer's response to complete the punch
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	buffer := make([]byte, 1024)
 	_, remoteAddr, err := conn.ReadFromUDP(buffer)
@@ -96,7 +91,7 @@ func startUdpHolePunching(peer PeerIpAndPort, port int) {
 		fmt.Println("Hole punching failed.")
 		return
 	}
-	conn.SetReadDeadline(time.Time{}) // Clear the read deadline for continuous listening
+	conn.SetReadDeadline(time.Time{})
 
 	fmt.Printf("\nSUCCESS: Hole punched! Connection established with %s\n", remoteAddr.String())
 	fmt.Println("----------------------------------------------------")
@@ -104,58 +99,44 @@ func startUdpHolePunching(peer PeerIpAndPort, port int) {
 	fmt.Println("Type '/quit' to exit.")
 	fmt.Println("----------------------------------------------------")
 
-	// --- Part 2: Bidirectional Chat ---
-
-	// A WaitGroup allows us to wait for our listening goroutine to finish before exiting.
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	// Launch the listening goroutine
 	go func() {
-		defer wg.Done() // Signal that this goroutine is finished when it exits
+		defer wg.Done()
 		listenForMessages(conn)
 	}()
 
-	// Use the main goroutine to handle sending messages
 	handleSending(conn, remoteAddr)
 
-	// When handleSending exits (e.g., user types /quit), we need to close the connection.
-	// This will cause the listenForMessages goroutine to exit because conn.ReadFromUDP will error.
 	fmt.Println("Closing connection...")
 	conn.Close()
 
-	// Wait for the listening goroutine to finish its cleanup.
 	wg.Wait()
 	fmt.Println("Communication finished.")
 }
 
-// listenForMessages runs in its own goroutine, continuously reading from the connection.
 func listenForMessages(conn *net.UDPConn) {
 	buffer := make([]byte, 1024)
 	for {
 		n, _, err := conn.ReadFromUDP(buffer)
 		if err != nil {
-			// If we get an error, it's likely because the connection was closed.
-			// We can safely exit the loop.
 			fmt.Printf("\nListener stopping due to an error: %v\n", err)
 			return
 		}
-		// Print the received message. The \r is a carriage return to overwrite the current line.
 		fmt.Printf("\r<-- Received: %s\n> ", string(buffer[:n]))
 	}
 }
 
-// handleSending reads from stdin and sends messages to the peer.
 func handleSending(conn *net.UDPConn, remoteAddr *net.UDPAddr) {
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Print("> ")
 	for scanner.Scan() {
 		text := scanner.Text()
 		if strings.ToLower(text) == "/quit" {
-			break // Exit the loop
+			break
 		}
 
-		// Send the message to the peer
 		_, err := conn.WriteToUDP([]byte(text), remoteAddr)
 		if err != nil {
 			fmt.Printf("Error sending message: %v\n", err)
@@ -218,7 +199,7 @@ func sendFile() {
 		return
 	}
 	buffer := bytes.NewBuffer(jsonData)
-	resp, err := http.Post(registerURL, "application/json", buffer)
+	resp, err := http.Post(baseUrl+"/register", "application/json", buffer)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -253,7 +234,7 @@ func receiveFile() {
 	}
 
 	bodyReader := bytes.NewBuffer(jsonData)
-	resp, err := http.Post(fmt.Sprintf(apiURL, uniqueCode), "application/json", bodyReader)
+	resp, err := http.Post(fmt.Sprintf(baseUrl+"/lookup?uid=%s", uniqueCode), "application/json", bodyReader)
 	if err != nil {
 		fmt.Println("Error making the request:", err)
 		return
@@ -262,18 +243,18 @@ func receiveFile() {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Println("Error reading the response body:", err)
+			return
+		}
+		fmt.Println("Response Body:", string(body))
+		json.Unmarshal(body, &publicIpAndPort)
+
 		startUdpHolePunching(publicIpAndPort, receiverUdpPort)
 		fmt.Printf("API call failed with status code: %d\n", resp.StatusCode)
 		return
 	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Println("Error reading the response body:", err)
-		return
-	}
-
-	fmt.Println("Response Body:", string(body))
 
 }
 
@@ -311,7 +292,6 @@ func lookupFunc(w http.ResponseWriter, r *http.Request) {
 }
 
 func callback(senderIpAndPort PeerIpAndPort, receiverIpAndPort PeerIpAndPort) {
-
 	jsonData, err := json.Marshal(receiverIpAndPort)
 	if err != nil {
 		fmt.Println("Error marshaling JSON:", err)
@@ -377,7 +357,7 @@ func main() {
 	http.HandleFunc("/webhook", webhookFunc)
 	http.HandleFunc("/register", registerFunc)
 
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	if err := http.ListenAndServe(":8081", nil); err != nil {
 		panic(err)
 	}
 }
